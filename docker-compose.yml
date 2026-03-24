@@ -1,0 +1,23 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Containerfile
+    container_name: insights-backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    # hot-reload for local dev — mount source and run with --reload
+    volumes:
+      - ./backend/app:/app/app
+    command: ["python3.12", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Containerfile
+    container_name: insights-frontend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend

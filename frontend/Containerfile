@@ -1,0 +1,28 @@
+# Stage 1: build
+FROM registry.access.redhat.com/ubi9/nodejs-20:latest AS build
+
+# UBI nodejs images run as uid 1001; /opt/app-root/src is their writable workdir
+WORKDIR /opt/app-root/src
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# Stage 2: serve
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS serve
+
+RUN microdnf install -y nginx && microdnf clean all
+
+COPY --from=build /opt/app-root/src/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Remove default nginx config that binds to port 80 (requires root)
+RUN rm -f /etc/nginx/nginx.conf && \
+    printf 'worker_processes auto;\nerror_log /var/log/nginx/error.log;\npid /tmp/nginx.pid;\nevents { worker_connections 1024; }\nhttp { include /etc/nginx/mime.types; default_type application/octet-stream; sendfile on; include /etc/nginx/conf.d/*.conf; }\n' \
+    > /etc/nginx/nginx.conf && \
+    mkdir -p /var/cache/nginx/client_temp /var/log/nginx && \
+    chmod -R 777 /var/cache/nginx /var/log/nginx /tmp
+
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
