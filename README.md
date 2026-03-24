@@ -14,8 +14,10 @@ Visualizes Langfuse conversation traces from the HS Workshop AI — word cloud, 
 ```bash
 oc port-forward svc/clickhouse -n hsworkshop 18123:8123 &
 oc port-forward svc/postgres   -n hsworkshop 15432:5432 &
-# Optional — only needed for AI summary
-oc port-forward svc/gpt-oss-20b-service-predictor -n hsworkshop 18080:80 &
+# Optional — only needed for AI summary (headless service; must target pod directly)
+oc port-forward -n hsworkshop \
+  $(oc get pod -n hsworkshop -l serving.kserve.io/inferenceservice=qwen35-35b-service -o name | head -1) \
+  18080:8080 &
 ```
 
 ### 2. Configure environment
@@ -72,12 +74,28 @@ When switching from `testing-evalution` to `run-1` or `run-2`:
    ```
 3. Insights app automatically shows all projects in the dropdown — no restart needed.
 
-## Images
+## Building and pushing images
+
+Both images must target `linux/amd64` (cluster node architecture).
+
+**Backend** — pure Python, cross-compiles cleanly:
 
 ```bash
-# Build and push
-podman build -t quay.io/dprod/hsworkshop-insights-backend:latest ./backend -f ./backend/Containerfile
-podman build -t quay.io/dprod/hsworkshop-insights-frontend:latest ./frontend -f ./frontend/Containerfile
+podman build --platform linux/amd64 \
+  -t quay.io/dprod/hsworkshop-insights-backend:latest ./backend
 podman push quay.io/dprod/hsworkshop-insights-backend:latest
+```
+
+**Frontend** — uses `$BUILDPLATFORM` for the Node/esbuild build stage so it runs natively on the host (required on Apple Silicon — esbuild crashes under QEMU amd64 emulation), then packages the result into an amd64 nginx image:
+
+```bash
+podman build --platform linux/amd64 \
+  -t quay.io/dprod/hsworkshop-insights-frontend:latest ./frontend
 podman push quay.io/dprod/hsworkshop-insights-frontend:latest
+```
+
+After pushing, restart the deployments to pull the new image:
+
+```bash
+oc rollout restart deployment/insights-backend deployment/insights-frontend -n hsworkshop
 ```
