@@ -1,5 +1,5 @@
-# Stage 1: build
-FROM registry.access.redhat.com/ubi9/nodejs-20:latest AS build
+# Stage 1: build — use host platform so Node/esbuild run natively (avoids QEMU crashes on Apple Silicon)
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi9/nodejs-20:latest AS build
 
 # UBI nodejs images run as uid 1001; /opt/app-root/src is their writable workdir
 WORKDIR /opt/app-root/src
