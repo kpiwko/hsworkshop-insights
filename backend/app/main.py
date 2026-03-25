@@ -43,13 +43,24 @@ def get_projects():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def _get_data(project_id: str, filter: Filter) -> list[dict]:
+    """Fetch conversation data for the given filter.
+
+    For 'blocked', uses traces.input ({"user_message": "..."}) since blocked
+    requests never reach the LLM and have no GENERATION observations.
+    For 'valid'/'all', uses observations of type GENERATION.
+    """
+    if filter == "blocked":
+        return clickhouse.get_blocked_traces(project_id)
+    return clickhouse.get_generations(project_id, filter)
+
+
 @app.get("/api/wordcloud")
 def get_wordcloud(
     project_id: str = Query(...),
     filter: Filter = Query("valid"),
 ):
-    generations = clickhouse.get_generations(project_id, filter)
-    return text.compute_word_frequencies(generations)
+    return text.compute_word_frequencies(_get_data(project_id, filter))
 
 
 @app.get("/api/wordgraph")
@@ -57,8 +68,7 @@ def get_wordgraph(
     project_id: str = Query(...),
     filter: Filter = Query("valid"),
 ):
-    generations = clickhouse.get_generations(project_id, filter)
-    return text.compute_word_graph(generations)
+    return text.compute_word_graph(_get_data(project_id, filter))
 
 
 @app.get("/api/blocked")
@@ -90,9 +100,7 @@ async def stream(
     async def generator() -> AsyncIterator[dict]:
         while True:
             try:
-                generations = await asyncio.to_thread(
-                    clickhouse.get_generations, project_id, filter
-                )
+                generations = await asyncio.to_thread(_get_data, project_id, filter)
                 words = text.compute_word_frequencies(generations)
                 graph = text.compute_word_graph(generations)
                 yield {

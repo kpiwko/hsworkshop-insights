@@ -60,6 +60,7 @@ def get_generations(project_id: str, filter: Filter = "valid") -> list[dict]:
           AND type = 'GENERATION'
           AND is_deleted = 0
           AND input IS NOT NULL
+          AND output NOT LIKE '%message was blocked%'
           {extra}
         ORDER BY start_time DESC
         FORMAT JSONEachRow

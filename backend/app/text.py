@@ -34,16 +34,28 @@ _TOKEN_RE = re.compile(r"[a-záčďéěíňóřšťúůýžA-ZÁČĎÉĚÍŇÓŘ
 
 
 def _extract_user_messages(input_json: str) -> list[str]:
-    """Parse input JSON array of messages, return user message contents."""
+    """Parse input JSON, return user message contents.
+
+    Handles two formats:
+    - Observations (GENERATION): JSON array [{role, content}, ...]
+    - Blocked traces: {"user_message": "..."} dict set by guardrails proxy
+    """
     try:
-        messages = json.loads(input_json)
+        data = json.loads(input_json)
     except Exception:
         return []
-    if not isinstance(messages, list):
+    # Blocked trace format: {"user_message": "..."}
+    if isinstance(data, dict):
+        msg = data.get("user_message", "")
+        # Skip OpenWebUI's auto-generated follow-up suggestion prompts
+        if not msg or "Suggest 3-5 relevant follow-up" in msg or "### Task:" in msg:
+            return []
+        return [msg]
+    if not isinstance(data, list):
         return []
     return [
         m["content"]
-        for m in messages
+        for m in data
         if isinstance(m, dict)
         and m.get("role") == "user"
         and isinstance(m.get("content"), str)

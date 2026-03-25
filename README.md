@@ -16,7 +16,7 @@ oc port-forward svc/clickhouse -n hsworkshop 18123:8123 &
 oc port-forward svc/postgres   -n hsworkshop 15432:5432 &
 # Optional — only needed for AI summary (headless service; must target pod directly)
 oc port-forward -n hsworkshop \
-  $(oc get pod -n hsworkshop -l serving.kserve.io/inferenceservice=gpt-oss-20b-service -o name | head -1) \
+  $(oc get pod -n hsworkshop -l serving.kserve.io/inferenceservice=eurollm-22b-service -o name | head -1) \
   18080:8080 &
 ```
 
