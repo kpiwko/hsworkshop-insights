@@ -1,5 +1,6 @@
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import httpx
@@ -10,7 +11,9 @@ MODEL_URL = os.environ.get(
 )
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-oss-20b-service")
 
-_CHUNK_SIZE = 8  # sessions per map-reduce chunk
+_CHUNK_SIZE = 8   # sessions per map-reduce chunk
+_MAX_MSG_CHARS = 500  # truncate individual messages to limit context size
+_MAP_WORKERS = 8  # parallel LLM calls during the map phase
 
 
 def _chat(messages: list[dict], max_tokens: int = 512) -> str:
@@ -24,9 +27,9 @@ def _chat(messages: list[dict], max_tokens: int = 512) -> str:
 
 
 def _summarize_session(session_messages: list[str]) -> str:
-    joined = "\n".join(f"- {m}" for m in session_messages[:20])
+    joined = "\n".join(f"- {m[:_MAX_MSG_CHARS]}" for m in session_messages[:20])
     return _chat([
-        {"role": "system", "content": "You are a concise analyst. Summarize the key topics of these user messages in 2-3 sentences."},
+        {"role": "system", "content": "You are a concise analyst. Summarize the key topics of these user messages in 2-3 sentences. Detect the predominant language of the messages and write your summary in that language."},
         {"role": "user", "content": f"User messages from one chat session:\n{joined}"},
     ])
 
@@ -34,7 +37,7 @@ def _summarize_session(session_messages: list[str]) -> str:
 def _summarize_summaries(summaries: list[str]) -> str:
     joined = "\n\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
     return _chat([
-        {"role": "system", "content": "You are a concise analyst. Synthesize these session summaries into one overall summary covering the main themes and topics discussed across all sessions. Be concrete and specific."},
+        {"role": "system", "content": "You are a concise analyst. Synthesize these session summaries into one overall summary covering the main themes and topics discussed across all sessions. Be concrete and specific. Write in the predominant language of the summaries."},
         {"role": "user", "content": joined},
     ], max_tokens=768)
 
@@ -64,13 +67,17 @@ def summarize_project(generations: list[dict[str, Any]]) -> str:
     if not sessions:
         return "No conversation data available for this project."
 
-    # Map: summarize each session
-    session_summaries = []
-    for msgs in list(sessions.values())[:40]:  # cap at 40 sessions
-        try:
-            session_summaries.append(_summarize_session(msgs))
-        except Exception as exc:
-            session_summaries.append(f"(session summary failed: {exc})")
+    # Map: summarize each session in parallel
+    session_list = list(sessions.values())[:40]  # cap at 40 sessions
+    session_summaries = [None] * len(session_list)
+    with ThreadPoolExecutor(max_workers=_MAP_WORKERS) as pool:
+        futures = {pool.submit(_summarize_session, msgs): i for i, msgs in enumerate(session_list)}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                session_summaries[i] = future.result()
+            except Exception as exc:
+                session_summaries[i] = f"(session summary failed: {exc})"
 
     if len(session_summaries) == 1:
         return session_summaries[0]
