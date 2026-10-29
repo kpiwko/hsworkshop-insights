@@ -3,7 +3,6 @@ import json
 import os
 from typing import AsyncIterator, Literal
 
-import psycopg2
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
@@ -19,26 +18,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-POSTGRES_URL = os.environ["POSTGRES_URL"]
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL_SECONDS", "30"))
 
 Filter = Literal["valid", "all", "blocked"]
 
 
-def _pg_projects() -> list[dict]:
-    conn = psycopg2.connect(POSTGRES_URL)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, name FROM projects ORDER BY name")
-            return [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
-    finally:
-        conn.close()
-
-
 @app.get("/api/projects")
 def get_projects():
     try:
-        return _pg_projects()
+        return clickhouse.get_projects()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
