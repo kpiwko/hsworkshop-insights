@@ -1,7 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
-
-RUN microdnf install -y python3.12 python3.12-pip gcc python3.12-devel libpq-devel && \
-    microdnf clean all
+FROM registry.access.redhat.com/ubi9/python-312:latest
 
 WORKDIR /app
 COPY requirements.txt .
