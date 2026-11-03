@@ -4,8 +4,8 @@
 - **Status:** T1 executed 2026-10-29; T2/T3 pending (not yet execution-assigned)
 - **Parent orchestrator:** executes T1 -> T2 -> T3 with separate validation gates.
 - **Roots:**
-  - Insights: `/Users/kpiwko/devel/workshops/hsworkshop-insights`
-  - Gitops: `/Users/kpiwko/devel/workshops/genaidemo25-gitops`
+  - Insights: `~/devel/workshops/hsworkshop-insights`
+  - Gitops: `~/devel/workshops/genaidemo25-gitops`
 
 ## Global constraints
 
