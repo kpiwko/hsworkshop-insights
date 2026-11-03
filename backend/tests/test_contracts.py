@@ -12,8 +12,6 @@ import os
 import unittest
 from unittest import mock
 
-import httpx
-
 # Dummy env must exist before app import (main.py / clickhouse.py read at import time)
 os.environ.setdefault("LANGFUSE_HOST", "http://langfuse:3000")
 os.environ.setdefault("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
@@ -29,7 +27,7 @@ os.environ.setdefault("SSE_INTERVAL_SECONDS", "1")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import clickhouse, summarizer, text  # noqa: E402
-from app.main import _get_data, app  # noqa: E402
+from app.main import _get_data, app, stream  # noqa: E402
 
 
 def _generation(trace_id: str, content: str) -> dict:
@@ -281,11 +279,12 @@ class SummarizerChatContract(unittest.TestCase):
 class SSEStreamContract(unittest.TestCase):
     """Consume the SSE stream as a bounded async body iterator.
 
-    The /api/stream response is an infinite event stream, so it must never be
-    consumed through TestClient's eager request/response cycle. Instead we
-    drive the ASGI app directly with httpx.AsyncClient, read only the first
-    `data:` line under a hard asyncio.wait_for timeout, and always close the
-    response in a finally block.
+    The /api/stream response is an infinite event stream. Consuming it through
+    httpx's ASGITransport hangs, because the transport buffers the response
+    body and the stream never ends. Instead we call the endpoint function
+    directly and consume the returned EventSourceResponse.body_iterator:
+    read only the first yielded event under a hard asyncio.wait_for timeout,
+    and always close the iterator in a finally block.
     """
 
     TIMEOUT = 5.0
@@ -298,36 +297,26 @@ class SSEStreamContract(unittest.TestCase):
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()
 
-    async def _first_event(self) -> dict:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
-        ) as client:
-            async with client.stream(
-                "GET", "/api/stream?project_id=p-1&filter=valid"
-            ) as response:
-                self.assertEqual(response.status_code, 200)
-                try:
-                    payload = await asyncio.wait_for(
-                        self._read_first_event(response), timeout=self.TIMEOUT
-                    )
-                finally:
-                    await response.aclose()
-        return payload
+    async def _first_event(self, filter: str) -> dict:
+        response = await stream(project_id="p-1", filter=filter)
+        body = response.body_iterator
+        try:
+            return await asyncio.wait_for(
+                self._read_first_event(body), timeout=self.TIMEOUT
+            )
+        finally:
+            await body.aclose()
 
-    async def _read_first_event(self, response) -> dict:
-        async for chunk in response.aiter_raw():
-            text = chunk.decode("utf-8", errors="replace")
-            for line in text.splitlines():
-                if line.startswith("data:"):
-                    return json.loads(line[len("data:"):].strip())
+    async def _read_first_event(self, body) -> dict:
+        async for event in body:
+            return json.loads(event["data"])
         self.fail("stream ended before any data event")
 
     def test_stream_update_payload_contract(self):
         gens = [_generation("t-1", "kubernetes openshift kubernetes kafka")]
         with mock.patch.object(clickhouse, "get_blocked_traces", return_value=[]), \
              mock.patch.object(clickhouse, "get_generations", return_value=gens) as gg:
-            payload = self._run(self._first_event())
+            payload = self._run(self._first_event("valid"))
         gg.assert_called_once_with("p-1", "valid")
         self.assertEqual(set(payload), {"wordcloud", "wordgraph"})
         for item in payload["wordcloud"]:
@@ -335,28 +324,11 @@ class SSEStreamContract(unittest.TestCase):
         self.assertEqual(set(payload["wordgraph"]), {"nodes", "edges"})
 
     def test_stream_error_payload_contract(self):
-        def boom(project_id, filter):
+        def boom(project_id):
             raise RuntimeError("clickhouse exploded")
 
-        async def first_error_event() -> dict:
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://testserver"
-            ) as client:
-                async with client.stream(
-                    "GET", "/api/stream?project_id=p-1&filter=blocked"
-                ) as response:
-                    self.assertEqual(response.status_code, 200)
-                    try:
-                        payload = await asyncio.wait_for(
-                            self._read_first_event(response), timeout=self.TIMEOUT
-                        )
-                    finally:
-                        await response.aclose()
-            return payload
-
         with mock.patch.object(clickhouse, "get_blocked_traces", side_effect=boom):
-            payload = self._run(first_error_event())
+            payload = self._run(self._first_event("blocked"))
         self.assertEqual(set(payload), {"error"})
         self.assertIn("clickhouse exploded", payload["error"])
 
