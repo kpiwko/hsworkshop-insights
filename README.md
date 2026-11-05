@@ -74,28 +74,19 @@ When switching from `testing-evalution` to `run-1` or `run-2`:
    ```
 3. Insights app automatically shows all projects in the dropdown — no restart needed.
 
-## Building and pushing images
+## Container images
 
-Both images must target `linux/amd64` (cluster node architecture).
+Images are built and published by GitHub Actions (`.github/workflows/build.yaml`)
+on every push to `main`, natively on `ubuntu-24.04` (amd64) and
+`ubuntu-24.04-arm` (arm64). Each image is smoke-tested as an arbitrary UID
+before it is pushed to GHCR with `GITHUB_TOKEN`, then combined into a
+multi-arch manifest tagged `:<commit-sha>` and `:main`:
 
-**Backend** — pure Python, cross-compiles cleanly:
+- `ghcr.io/kpiwko/hsworkshop-insights-backend`
+- `ghcr.io/kpiwko/hsworkshop-insights-frontend`
 
-```bash
-podman build --platform linux/amd64 \
-  -t quay.io/dprod/hsworkshop-insights-backend:latest ./backend
-podman push quay.io/dprod/hsworkshop-insights-backend:latest
-```
+Deploy by digest or `:<commit-sha>`, not a moving tag. New GHCR packages start
+private; set them to public in the package settings for anonymous pulls.
 
-**Frontend** — uses `$BUILDPLATFORM` for the Node/esbuild build stage so it runs natively on the host (required on Apple Silicon — esbuild crashes under QEMU amd64 emulation), then packages the result into an amd64 nginx image:
-
-```bash
-podman build --platform linux/amd64 \
-  -t quay.io/dprod/hsworkshop-insights-frontend:latest ./frontend
-podman push quay.io/dprod/hsworkshop-insights-frontend:latest
-```
-
-After pushing, restart the deployments to pull the new image:
-
-```bash
-oc rollout restart deployment/insights-backend deployment/insights-frontend -n hsworkshop
-```
+Base images are pinned by multi-arch index digest; update them deliberately.
+No manual `podman push` is needed.
