@@ -28,6 +28,18 @@ const lastUpdated = ref<Date | null>(null)
 
 let es: EventSource | null = null
 
+// Only replace data when it really changed, so the word cloud / graph layouts
+// are not recomputed (and visibly reshuffled) on identical refreshes.
+let lastKey = ''
+function applyData(w: WordEntry[], g: WordGraphData) {
+  const key = JSON.stringify([w, g])
+  lastUpdated.value = new Date()
+  if (key === lastKey) return
+  lastKey = key
+  words.value = w
+  graph.value = g
+}
+
 async function loadData() {
   if (!selectedProjectId.value) return
   loading.value = true
@@ -37,9 +49,7 @@ async function loadData() {
       fetchWordCloud(selectedProjectId.value, filter.value),
       fetchWordGraph(selectedProjectId.value, filter.value),
     ])
-    words.value = w
-    graph.value = g
-    lastUpdated.value = new Date()
+    applyData(w, g)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -54,9 +64,7 @@ function connectStream() {
     selectedProjectId.value,
     filter.value,
     update => {
-      words.value = update.wordcloud
-      graph.value = update.wordgraph
-      lastUpdated.value = new Date()
+      applyData(update.wordcloud, update.wordgraph)
     },
     err => { error.value = err },
   )
