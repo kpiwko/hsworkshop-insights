@@ -205,7 +205,8 @@ class LangfuseApiContract(unittest.TestCase):
         pages = [
             {"data": [
                 {"traceId": "t-1", "input": "[]", "output": "[]", "type": "GENERATION"},
-                {"traceId": "t-2", "input": "[]", "output": "[]", "type": "GENERATION"},
+                {"traceId": "t-2", "type": "GENERATION", "output": "[]",
+                 "input": json.dumps([{"role": "user", "content": "ahoj"}])},
             ], "meta": {}},
             {"data": [
                 {"traceId": "t-1", "id": "b-1", "startTime": "2026-10-29T00:00:00Z",
@@ -237,6 +238,131 @@ class LangfuseApiContract(unittest.TestCase):
         with mock.patch.object(clickhouse.httpx, "get", side_effect=lambda *a, **kw: FakeHttpx.get(*a, **kw)):
             rows = clickhouse.get_projects()
         self.assertEqual(rows, [{"id": "p-1", "name": "Projekt"}])
+
+
+
+BLOCK_REPLY = (
+    "\u26a0\ufe0f Your message was blocked because it contained inappropriate language. "
+    "Please rephrase your question without swear words."
+)
+
+
+def _obs(trace_id, user_messages, output="fine", start="2026-11-05T10:00:00Z"):
+    return {
+        "traceId": trace_id,
+        "startTime": start,
+        "type": "GENERATION",
+        "output": output,
+        "input": json.dumps([{"role": "user", "content": m} for m in user_messages]),
+    }
+
+
+def _guardrail(prompt, trace_id="guard-1"):
+    return {
+        "traceId": trace_id,
+        "id": "g-" + trace_id,
+        "startTime": "2026-11-05T10:00:00Z",
+        "type": "GUARDRAIL",
+        "input": json.dumps({"user_message": prompt}),
+        "output": "BLOCKED",
+    }
+
+
+class FilteringContract(unittest.TestCase):
+    """Valid/all filtering as seen through the public get_generations()."""
+
+    def _run(self, pages, flt):
+        it = iter(pages)
+
+        class Resp:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self.payload
+
+        with mock.patch.object(clickhouse.httpx, "get",
+                               side_effect=lambda *a, **kw: Resp(next(it))):
+            return clickhouse.get_generations("p-1", flt)
+
+    @staticmethod
+    def _messages(rows):
+        out = []
+        for r in rows:
+            out.append([m["content"] for m in json.loads(r["input"])])
+        return out
+
+    def test_valid_drops_blocked_prompt_from_the_blocked_turn_and_later_history(self):
+        # One chat: turn 1 was blocked; turn 2 repeats the whole history.
+        gens = {"data": [
+            _obs("chat-1", ["rude words"], output=BLOCK_REPLY, start="2026-11-05T10:00:01Z"),
+            _obs("chat-1", ["rude words", "nice question"], start="2026-11-05T10:00:09Z"),
+        ], "meta": {}}
+        blocked = {"data": [_guardrail("rude words")], "meta": {}}
+        rows = self._run([gens, blocked], "valid")
+        self.assertEqual(self._messages(rows), [["nice question"]])
+
+    def test_valid_detects_blocked_turn_by_its_reply_when_the_span_is_missing(self):
+        # Telemetry fails open: the guardrail span may be dropped under load.
+        gens = {"data": [
+            _obs("chat-1", ["rude words"], output=BLOCK_REPLY, start="2026-11-05T10:00:01Z"),
+            _obs("chat-1", ["rude words", "nice question"], start="2026-11-05T10:00:09Z"),
+        ], "meta": {}}
+        rows = self._run([gens, {"data": [], "meta": {}}], "valid")
+        self.assertEqual(self._messages(rows), [["nice question"]])
+
+    def test_each_message_counted_once_per_chat_despite_repeated_history(self):
+        gens = {"data": [
+            _obs("chat-1", ["one"], start="2026-11-05T10:00:01Z"),
+            _obs("chat-1", ["one", "two"], start="2026-11-05T10:00:02Z"),
+            _obs("chat-1", ["one", "two", "three"], start="2026-11-05T10:00:03Z"),
+        ], "meta": {}}
+        rows = self._run([gens, {"data": [], "meta": {}}], "valid")
+        self.assertEqual(self._messages(rows), [["one", "two", "three"]])
+        freqs = {w["word"]: w["count"] for w in text.compute_word_frequencies(rows)}
+        self.assertEqual(freqs, {"one": 1, "two": 1, "three": 1})
+
+    def test_same_text_in_different_chats_still_counts_per_chat(self):
+        gens = {"data": [
+            _obs("chat-1", ["hello there"]),
+            _obs("chat-2", ["hello there"]),
+        ], "meta": {}}
+        rows = self._run([gens, {"data": [], "meta": {}}], "valid")
+        freqs = {w["word"]: w["count"] for w in text.compute_word_frequencies(rows)}
+        self.assertEqual(freqs["hello"], 2)
+
+    def test_all_keeps_blocked_prompts_but_still_dedupes_history(self):
+        gens = {"data": [
+            _obs("chat-1", ["rude words"], output=BLOCK_REPLY, start="2026-11-05T10:00:01Z"),
+            _obs("chat-1", ["rude words", "nice question"], start="2026-11-05T10:00:09Z"),
+        ], "meta": {}}
+        rows = self._run([gens], "all")
+        self.assertEqual(self._messages(rows), [["rude words", "nice question"]])
+
+    def test_valid_drops_message_found_inside_a_long_task_prompt_span(self):
+        gens = {"data": [
+            _obs("chat-1", ["rude words", "nice question"]),
+        ], "meta": {}}
+        blocked = {"data": [_guardrail("<chat_history>USER: rude words</chat_history>")], "meta": {}}
+        rows = self._run([gens, blocked], "valid")
+        self.assertEqual(self._messages(rows), [["nice question"]])
+
+    def test_span_containing_several_messages_is_ambiguous_and_ignored(self):
+        gens = {"data": [_obs("chat-1", ["rude words", "nice question"])], "meta": {}}
+        blocked = {"data": [_guardrail("USER: rude words USER: nice question")], "meta": {}}
+        rows = self._run([gens, blocked], "valid")
+        self.assertEqual(self._messages(rows), [["rude words", "nice question"]])
+
+    def test_legitimate_answer_mentioning_swearing_is_not_treated_as_blocked(self):
+        gens = {"data": [
+            _obs("chat-1", ["how do I report abuse"],
+                 output="Avoid inappropriate language when you write the report."),
+        ], "meta": {}}
+        rows = self._run([gens, {"data": [], "meta": {}}], "valid")
+        self.assertEqual(self._messages(rows), [["how do I report abuse"]])
 
 
 class SummarizerChatContract(unittest.TestCase):
