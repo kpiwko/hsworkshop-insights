@@ -397,9 +397,22 @@ class SummarizerChatContract(unittest.TestCase):
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 99,
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         )
         self.assertEqual(captured["timeout"], 120)
+
+    def test_chat_raises_clear_error_when_content_is_null(self):
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": None}, "finish_reason": "length"}]}
+
+        with mock.patch.object(summarizer.httpx, "post", return_value=FakeResp()):
+            with self.assertRaisesRegex(RuntimeError, "no content.*length"):
+                summarizer._chat([{"role": "user", "content": "hi"}])
 
 
 class SSEStreamContract(unittest.TestCase):

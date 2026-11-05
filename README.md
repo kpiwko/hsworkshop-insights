@@ -9,14 +9,17 @@ Visualizes Langfuse conversation traces from the HS Workshop AI — word cloud, 
 - podman (4.x+, includes `podman compose` built-in)
 - `oc` logged in to the cluster
 
-### 1. Port-forward cluster services
+### 1. Port-forward the cluster services
+
+Insights reads from the Langfuse public API (no direct database access) and,
+for the AI summary, calls the model endpoint.
 
 ```bash
-oc port-forward svc/clickhouse -n hsworkshop 18123:8123 &
-oc port-forward svc/postgres   -n hsworkshop 15432:5432 &
-# Optional — only needed for AI summary (headless service; must target pod directly)
+oc port-forward svc/langfuse -n hsworkshop 3000:3000 &
+# Optional — only needed for AI summary
+# (headless service; must target the pod directly)
 oc port-forward -n hsworkshop \
-  $(oc get pod -n hsworkshop -l serving.kserve.io/inferenceservice=eurollm-22b-service -o name | head -1) \
+  $(oc get pod -n hsworkshop -l serving.kserve.io/inferenceservice=qwen36-service -o name | head -1) \
   18080:8080 &
 ```
 
@@ -26,18 +29,10 @@ oc port-forward -n hsworkshop \
 cp .env.example .env
 ```
 
-Fill in the passwords (get them from the cluster secrets):
-
-```bash
-# ClickHouse password
-oc get secret clickhouse-secret -n hsworkshop \
-  -o jsonpath='{.data.CLICKHOUSE_PASSWORD}' | base64 -d
-
-# PostgreSQL password (langfuse user)
-oc get secret langfuse-secret -n hsworkshop \
-  -o jsonpath='{.data.DATABASE_URL}' | base64 -d
-# → extract password from the postgresql://langfuse:<password>@... URL
-```
+Set `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (a project
+API key from the Langfuse UI: Settings → API Keys), and `MODEL_URL` /
+`MODEL_NAME` for the summary. `.env.example` has working defaults for the
+port-forwards above.
 
 ### 3. Run
 

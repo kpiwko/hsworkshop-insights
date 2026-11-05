@@ -19,11 +19,24 @@ _MAP_WORKERS = 8  # parallel LLM calls during the map phase
 def _chat(messages: list[dict], max_tokens: int = 512) -> str:
     resp = httpx.post(
         f"{MODEL_URL}/chat/completions",
-        json={"model": MODEL_NAME, "messages": messages, "max_tokens": max_tokens},
+        json={
+            "model": MODEL_NAME,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            # Reasoning models otherwise spend the whole budget thinking and
+            # return content=null; a summary needs no chain of thought.
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
         timeout=120,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    choice = resp.json()["choices"][0]
+    content = (choice["message"].get("content") or "").strip()
+    if not content:
+        raise RuntimeError(
+            f"model returned no content (finish_reason={choice.get('finish_reason')})"
+        )
+    return content
 
 
 def _summarize_session(session_messages: list[str]) -> str:
