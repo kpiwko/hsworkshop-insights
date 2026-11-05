@@ -24,7 +24,7 @@ function render(graph: WordGraph) {
   const maxCount = Math.max(...graph.nodes.map(n => n.count), 1)
   const maxWeight = Math.max(...graph.edges.map(e => e.weight), 1)
 
-  const nodeRadius = d3.scaleLinear().domain([1, maxCount]).range([6, 28])
+  const nodeRadius = d3.scaleLinear().domain([1, maxCount]).range([8, 36])
   const edgeWidth = d3.scaleLinear().domain([1, maxWeight]).range([0.5, 4])
   const color = d3.scaleSequential(d3.interpolateTurbo).domain([0, maxCount])
 
@@ -90,7 +90,7 @@ function render(graph: WordGraph) {
     .text(d => d.word)
     .attr('text-anchor', 'middle')
     .attr('dy', '0.35em')
-    .style('font-size', d => `${Math.max(9, nodeRadius(d.count) * 0.7)}px`)
+    .style('font-size', d => `${Math.max(12, nodeRadius(d.count) * 0.9)}px`)
     .style('font-family', 'Inter, sans-serif')
     .style('font-weight', '500')
     .style('fill', '#1e293b')
