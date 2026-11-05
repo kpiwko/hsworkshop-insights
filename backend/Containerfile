@@ -1,4 +1,5 @@
-FROM registry.access.redhat.com/ubi9/python-312:latest
+# Base pinned by multi-arch INDEX digest (amd64 + arm64), not a per-arch digest.
+FROM registry.access.redhat.com/ubi9/python-312@sha256:19e1e927138b40454858f297884c2c4e2f13f5ba95b3f55faea174d3cbb57067
 
 WORKDIR /app
 COPY requirements.txt .

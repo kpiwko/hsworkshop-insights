@@ -1,0 +1,154 @@
+name: Build and push
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - component: backend
+            health_path: /health
+          - component: frontend
+            health_path: /
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: hsworkshop-insights-${{ matrix.component }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify native Podman runner
+        run: |
+          set -euo pipefail
+          command -v podman
+          podman info >/dev/null
+          case "$(uname -m):${{ matrix.arch }}" in
+            x86_64:amd64|aarch64:arm64) ;;
+            *) echo "Runner is not native for ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
+
+      - name: Build image
+        id: build
+        uses: redhat-actions/buildah-build@v3
+        with:
+          image: ${{ env.IMAGE }}
+          tags: ${{ github.sha }}-${{ matrix.arch }}
+          context: ./${{ matrix.component }}
+          containerfiles: ./${{ matrix.component }}/Containerfile
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/kpiwko/hsworkshop-insights
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Smoke-test native image with arbitrary UID
+        env:
+          ARCH: ${{ matrix.arch }}
+          COMPONENT: ${{ matrix.component }}
+          HEALTH_PATH: ${{ matrix.health_path }}
+          TAG: ${{ github.sha }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$(uname -m):${ARCH}" in
+            x86_64:amd64|aarch64:arm64) ;;
+            *) echo "Smoke test is not running natively for ${ARCH}" >&2; exit 1 ;;
+          esac
+
+          image_ref="${IMAGE}:${TAG}"
+          platform="$(podman image inspect --format '{{.Os}}/{{.Architecture}}' "${image_ref}")"
+          test "${platform}" = "linux/${ARCH}"
+
+          # Rootless Podman only maps a small UID range, so an arbitrary UID such
+          # as 123456 cannot be set. Run the smoke test under rootful Podman.
+          podman save "${image_ref}" | sudo podman load >/dev/null
+
+          if [ "${COMPONENT}" = "backend" ]; then
+            port=8000
+            # The backend reads these at import time; dummy values are enough
+            # for /health (no upstream is contacted).
+            extra_env=(-e LANGFUSE_HOST=http://localhost:3000 -e LANGFUSE_PUBLIC_KEY=pk-smoke -e LANGFUSE_SECRET_KEY=sk-smoke)
+          else
+            port=8080
+            extra_env=()
+          fi
+
+          container="insights-smoke-${COMPONENT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          cleanup() {
+            sudo podman rm --force "${container}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          sudo podman run --detach --name "${container}" \
+            --publish "127.0.0.1:18080:${port}" \
+            --user 123456:0 \
+            "${extra_env[@]}" \
+            "${image_ref}"
+          uid="$(sudo podman exec "${container}" id -u)"
+          test "${uid}" = "123456"
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --output /dev/null "http://127.0.0.1:18080${HEALTH_PATH}"; then
+              echo "${COMPONENT} healthy on native ${ARCH}"
+              exit 0
+            fi
+            sleep 1
+          done
+          sudo podman logs "${container}"
+          echo "${COMPONENT} did not become healthy on native ${ARCH}" >&2
+          exit 1
+
+      - name: Push per-architecture image to GHCR
+        uses: redhat-actions/push-to-registry@v3
+        with:
+          image: ${{ env.IMAGE }}
+          tags: ${{ github.sha }}-${{ matrix.arch }}
+          registry: ghcr.io/kpiwko
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  manifest:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish SHA and branch multi-architecture manifests
+        env:
+          IMAGE: ghcr.io/kpiwko/hsworkshop-insights-${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${GITHUB_SHA}" \
+            --tag "${IMAGE}:main" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/kpiwko/hsworkshop-insights" \
+            "${IMAGE}:${GITHUB_SHA}-amd64" \
+            "${IMAGE}:${GITHUB_SHA}-arm64"
