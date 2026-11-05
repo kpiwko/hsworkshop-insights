@@ -95,11 +95,30 @@ jobs:
           }
           trap cleanup EXIT
 
+          # nginx resolves its `insights-backend` upstream at startup (a Service
+          # in the cluster) and exits if the name is unknown. For the frontend,
+          # alias that name to loopback; no backend is needed for the smoke test.
+          host_args=()
+          if [ "${COMPONENT}" = "frontend" ]; then
+            host_args=(--add-host insights-backend:127.0.0.1)
+          fi
+
           sudo podman run --detach --name "${container}" \
             --publish "127.0.0.1:18080:${port}" \
             --user 123456:0 \
+            "${host_args[@]}" \
             "${extra_env[@]}" \
             "${image_ref}"
+
+          dump_logs() {
+            sudo podman logs "${container}" || true
+          }
+          sleep 1
+          if [ "$(sudo podman inspect --format '{{.State.Running}}' "${container}")" != "true" ]; then
+            dump_logs
+            echo "${COMPONENT} exited right after start on native ${ARCH}" >&2
+            exit 1
+          fi
           uid="$(sudo podman exec "${container}" id -u)"
           test "${uid}" = "123456"
 
@@ -110,7 +129,7 @@ jobs:
             fi
             sleep 1
           done
-          sudo podman logs "${container}"
+          dump_logs
           echo "${COMPONENT} did not become healthy on native ${ARCH}" >&2
           exit 1
 
